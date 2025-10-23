@@ -6,7 +6,7 @@ import multer from 'multer';
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
-
+const PORT = process.env.PORT || 8787;
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -34,6 +34,9 @@ async function withRetry(fn, { retries = 5, baseMs = 600 } = {}) {
 
 /* ---------------- Health ---------------- */
 app.get('/ping', (_req, res) => res.json({ ok: true }));
+app.get('/', (req, res) => {
+  res.send('Cliniverse Assistant API OK');
+});
 
 /* ---------------- 1) Create Vector Store ---------------- */
 app.all('/init-vector-store', async (_req, res) => {
@@ -310,6 +313,7 @@ Disclaimer: It is the practitioner’s responsibility to ensure marketing is acc
   }
 });
 
-app.listen(8787, () => {
-  console.log('Cliniverse Assistant running on http://localhost:8787');
+app.listen(PORT, () => {
+  console.log(`Cliniverse Assistant running on http://localhost:${PORT}`);
 });
+

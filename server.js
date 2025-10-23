@@ -6,7 +6,9 @@ import multer from 'multer';
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
+
 const PORT = process.env.PORT || 8787;
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -34,7 +36,7 @@ async function withRetry(fn, { retries = 5, baseMs = 600 } = {}) {
 
 /* ---------------- Health ---------------- */
 app.get('/ping', (_req, res) => res.json({ ok: true }));
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.send('Cliniverse Assistant API OK');
 });
 
@@ -90,7 +92,7 @@ app.post('/ingest', upload.array('files'), async (req, res) => {
   }
 });
 
-/* ---------------- Helpers that adapt to SDK signature quirks ---------------- */
+/* ---------------- Helpers that adapt to SDK quirks ---------------- */
 // Threads
 async function threadCreate() {
   try {
@@ -98,14 +100,12 @@ async function threadCreate() {
     console.log('DEBUG threadCreate: positional ok');
     return t;
   } catch {
-    const t = await client.beta.threads.create({}); // object fallback
+    const t = await client.beta.threads.create({});
     console.log('DEBUG threadCreate: object ok');
     return t;
   }
 }
 
-// Messages.create — your logs showed object-form caused "/threads/[object Object]/messages"
-// So: try POSitional first, then object-form fallback.
 async function messageCreate(threadId, body) {
   try {
     const r = await client.beta.threads.messages.create(threadId, body);
@@ -118,7 +118,6 @@ async function messageCreate(threadId, body) {
   }
 }
 
-// Messages.list — try positional first, then object
 async function messageList(threadId, opts = {}) {
   try {
     const r = await client.beta.threads.messages.list(threadId, opts);
@@ -131,8 +130,6 @@ async function messageList(threadId, opts = {}) {
   }
 }
 
-// Runs.create — your logs showed object-form caused "/threads/[object Object]/runs"
-// So: try POSitional first, then object-form fallback.
 async function runCreate(threadId, body) {
   try {
     const r = await client.beta.threads.runs.create(threadId, body);
@@ -145,8 +142,6 @@ async function runCreate(threadId, body) {
   }
 }
 
-// Runs.retrieve — your latest error shows positional fails with "undefined", so it wants OBJECT first.
-// Try OBJECT first, then positional fallback.
 async function runRetrieve(threadId, runId) {
   try {
     const r = await client.beta.threads.runs.retrieve({ thread_id: threadId, run_id: runId });
@@ -159,7 +154,6 @@ async function runRetrieve(threadId, runId) {
   }
 }
 
-// Runs.list — try positional first, then object
 async function runList(threadId, opts = {}) {
   try {
     const r = await client.beta.threads.runs.list(threadId, opts);
@@ -178,18 +172,43 @@ async function ensureAssistant() {
   let aId = (process.env.ASSISTANT_ID || '').trim();
 
   const baseInstructions = `
-You are Cliniverse Coach — a compliant, marketing-only assistant for physio, chiro, osteo, and RMT clinics.
-Think like a compliant Alex Hormozi: direct, practical, growth-minded, within regulations.
+You are Cliniverse Coach — a friendly, concise, marketing-only assistant for physio, chiro, osteo, and RMT clinics.
+Think like a compliant Alex Hormozi: direct, practical, growth-minded, and within regulations.
 
-Order:
-1) If the user has not provided BOTH profession and province/state, ask for them first and wait.
-2) Apply general guidelines for the profession + region.
-3) Layer ad-specific rules on top.
-4) If rules conflict, prefer the stricter one and say so.
-5) Always cite document titles + last updated dates.
+Context & Memory
+- Treat the conversation as a single session. Use the thread’s earlier messages as memory.
+- If BOTH profession and province/state are missing, ask for them ONCE up front.
+- If you can infer them from the thread, do not ask again.
+- If something is still missing, still provide a helpful draft answer immediately with assumptions noted and then ask one focused follow-up question.
 
-Never give clinical advice. Marketing/advertising only.
-Tone: short, clear, actionable. If user is frustrated, add Tash & Tyler’s support line.
+Compliance (hard rules; always apply to copy you produce)
+- DO NOT use superiority or qualitative claims: “expert”, “best”, “top-rated”, “#1”, “leading”, “most advanced”, “state-of-the-art”, “superior”, etc.
+- DO NOT guarantee outcomes or cures: “guarantee”, “cure”, “fix”, “permanent results”, etc.
+- Be truthful, verifiable, and not misleading. No testimonials unless the jurisdiction explicitly allows and user confirms compliance steps.
+- Avoid direct comparisons unless factual and verifiable.
+- Accurately represent qualifications; no exaggeration.
+- Respect privacy: no patient-identifiable details.
+- Apply regional and profession-specific ad rules.
+
+Self-check BEFORE replying
+- Quickly scan your own draft for ANY violations of the above. If found, rewrite to remove or rephrase.
+- If a user asks for a risky claim, provide a compliant alternative and briefly explain why.
+
+Tone & UX
+- Warm, encouraging, solutions-first. Avoid repeating the same question.
+- If the user is frustrated, acknowledge it and move forward with best-effort guidance.
+- Never output bracket placeholders or tool tags. Use plain text only.
+- Do NOT append "References:" or cite source docs unless the user explicitly asks.
+
+Output style
+- Lead with the answer (e.g., the caption/headlines) tailored to what you know.
+- Add 2–3 quick compliance tips inline when relevant.
+- End with one short, optional follow-up question to refine further.
+
+Optional support line
+- If appropriate, you may add one short sentence like:
+  "If you want extra help, Tash & Tyler at Cliniverse can support you with compliant marketing."
+(Plain text only — no bracketed placeholders or links.)
 `.trim();
 
   if (aId) {
@@ -197,8 +216,7 @@ Tone: short, clear, actionable. If user is frustrated, add Tash & Tyler’s supp
       const updated = await client.beta.assistants.update(aId, {
         model: 'gpt-4.1-mini',
         tools: [{ type: 'file_search' }],
-        // Bind vector store if API allows; ignore if not
-        tool_resources: vId ? { file_search: { vector_store_ids: [vId] } } : undefined,
+        tool_resources: (process.env.VECTOR_STORE_ID ? { file_search: { vector_store_ids: [vId] } } : undefined),
         instructions: baseInstructions
       });
       console.log('DEBUG assistant.update ok');
@@ -208,16 +226,15 @@ Tone: short, clear, actionable. If user is frustrated, add Tash & Tyler’s supp
     }
   }
 
-  // Create assistant (try with tool_resources, then without)
   try {
     const created = await client.beta.assistants.create({
       name: 'Cliniverse Coach',
       model: 'gpt-4.1-mini',
       tools: [{ type: 'file_search' }],
-      tool_resources: vId ? { file_search: { vector_store_ids: [vId] } } : undefined,
+      tool_resources: (process.env.VECTOR_STORE_ID ? { file_search: { vector_store_ids: [vId] } } : undefined),
       instructions: baseInstructions
     });
-    console.log('DEBUG assistant.create ok (with tool_resources)');
+    console.log('DEBUG assistant.create ok (with tool_resources if set)');
     return created.id;
   } catch (e) {
     console.warn('assistant.create with tool_resources failed; retrying without. Reason:', e?.message || e);
@@ -243,10 +260,11 @@ app.all('/init-assistant', async (_req, res) => {
   }
 });
 
-/* ---------------- 3) Chat ---------------- */
+/* ---------------- 3) Chat (thread-aware + compliance post-filter) ---------------- */
 app.post('/chat', async (req, res) => {
   try {
-    let { message, showDisclaimer = false } = req.body;
+    let { message: rawMessage, threadId, showDisclaimer = false } = req.body;
+    let message = String(rawMessage || '').trim();
 
     const aId = await ensureAssistant();
     const vId = (process.env.VECTOR_STORE_ID || '').trim();
@@ -257,25 +275,28 @@ app.post('/chat', async (req, res) => {
 Disclaimer: It is the practitioner’s responsibility to ensure marketing is accurate, verifiable, and compliant. Cliniverse provides guidance only.`;
     }
 
-    // 1) Thread
-    const thread = await threadCreate();
-    const threadId = thread.id;
-    console.log('THREAD:', threadId);
+    // 1) Thread (reuse if provided, else create)
+    let threadIdFinal = (threadId || '').trim();
+    if (!threadIdFinal) {
+      const thread = await threadCreate();
+      threadIdFinal = thread.id;
+    }
+    console.log('THREAD:', threadIdFinal);
 
     // 2) Message
-    await messageCreate(threadId, { role: 'user', content: message });
+    await messageCreate(threadIdFinal, { role: 'user', content: message });
 
-    // 3) Run — try to bind vector store at run level; if API rejects, fallback without
+    // 3) Run — bind vector store if present; fallback without
     let run;
     try {
-      run = await runCreate(threadId, {
+      run = await runCreate(threadIdFinal, {
         assistant_id: aId,
         tool_resources: vId ? { file_search: { vector_store_ids: [vId] } } : undefined
       });
       console.log('DEBUG runs.create ok (with tool_resources if set)');
     } catch (e) {
       console.warn('runs.create with tool_resources failed; retrying without. Reason:', e?.message || e);
-      run = await runCreate(threadId, { assistant_id: aId });
+      run = await runCreate(threadIdFinal, { assistant_id: aId });
     }
     const runId = run.id;
     console.log('RUN:', runId);
@@ -285,10 +306,10 @@ Disclaimer: It is the practitioner’s responsibility to ensure marketing is acc
     while (!terminal.has(run.status)) {
       await new Promise(r => setTimeout(r, 900));
       try {
-        run = await runRetrieve(threadId, runId);
+        run = await runRetrieve(threadIdFinal, runId);
       } catch (err) {
         console.warn('runs.retrieve failed; trying runs.list fallback. Reason:', err?.message || err);
-        const list = await runList(threadId);
+        const list = await runList(threadIdFinal);
         run = list?.data?.find(r => r.id === runId) || run;
       }
       console.log('STATUS:', run?.status || '(unknown)');
@@ -299,14 +320,41 @@ Disclaimer: It is the practitioner’s responsibility to ensure marketing is acc
     }
 
     // 5) Read reply
-    const msgs = await messageList(threadId, { limit: 10 });
+    const msgs = await messageList(threadIdFinal, { limit: 10 });
     const lastAssistantMsg = msgs.data.find(m => m.role === 'assistant');
     const text = (lastAssistantMsg?.content || [])
       .map(c => (c.type === 'text' ? c.text.value : ''))
       .join('\n')
       .trim();
 
-    res.json({ answer: text || '(no response text)', thread_id: threadId, run_id: runId });
+    // ---- Compliance post-filter ----
+    const bannedPhrases = /\b(expert|top[-\s]?rated|best\b|#1\b|leading\b|most advanced|state[-\s]?of[-\s]?the[-\s]?art|superior|guarantee|guaranteed|cure|permanent results|fix\b|fastest\b)\b/i;
+
+    let safeText = text || '';
+    if (bannedPhrases.test(safeText)) {
+      try {
+        const fix = await client.chat.completions.create({
+          model: 'gpt-4.1-mini',
+          temperature: 0.4,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are a compliance editor. Rewrite the user-provided marketing copy so it is compliant for healthcare advertising. ' +
+                'Remove superiority/quality claims (expert/best/#1/leading/most advanced/state-of-the-art/superior), guarantees/cures, and anything misleading. ' +
+                'Keep the intent and value, but use neutral, verifiable phrasing. Return only the revised copy.'
+            },
+            { role: 'user', content: safeText }
+          ]
+        });
+        const revised = fix.choices?.[0]?.message?.content?.trim();
+        if (revised) safeText = revised;
+      } catch (err) {
+        console.warn('Compliance fix pass failed; returning original text.', err?.message || err);
+      }
+    }
+
+    res.json({ answer: safeText || '(no response text)', thread_id: threadIdFinal, run_id: runId });
   } catch (e) {
     console.error('CHAT ERROR:', e);
     res.status(500).json({ error: e.message });
@@ -316,4 +364,3 @@ Disclaimer: It is the practitioner’s responsibility to ensure marketing is acc
 app.listen(PORT, () => {
   console.log(`Cliniverse Assistant running on http://localhost:${PORT}`);
 });
-

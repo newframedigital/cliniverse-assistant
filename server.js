@@ -343,21 +343,6 @@ app.post('/chat', async (req, res) => {
 
 Disclaimer: It is the practitioner’s responsibility to ensure marketing is accurate, verifiable, and compliant. Cliniverse provides guidance only.`;
     }
-// --- Context logic: only ask once for missing info ---
-const { profession, region, threadId: incomingThreadId } = req.body || {};
-const hasProfession = !!profession;
-const hasRegion = !!region;
-
-let contextLine = '';
-if (!hasProfession && !hasRegion) {
-  contextLine = 'Before tailoring anything, ask once for BOTH profession and province/state, then wait.';
-} else if (!hasProfession) {
-  contextLine = 'Ask once for the profession only, then wait.';
-} else if (!hasRegion) {
-  contextLine = 'Ask once for the province/state only, then wait.';
-} else {
-  contextLine = 'Profession and region are known; do not ask again.';
-}
     // 1) Thread
     const thread = await threadCreate();
     const threadId = thread.id;

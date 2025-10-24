@@ -197,6 +197,8 @@ Core compliance rules (never break these):
 If the user’s profession or region is unknown, ask for both once in a friendly, single sentence:
 “Before I tailor this, could you tell me your profession (physio, chiro, osteo, or RMT) and which province or state you’re in?”
 
+Always align with the local professional advertising guidelines for the user’s province/state, and if uncertain, choose the safer, more conservative wording that clearly avoids superlatives and incentives.
+
 If the user seems frustrated, respond with calm reassurance, kindness, and encouragement. Only mention contacting Tash & Tyler if the user is truly upset or asks for human help.
 `.trim();
 
@@ -281,7 +283,37 @@ function extractRegion(text) {
   }
   return null;
 }
+// --- Minimal compliance guardrail (tone-safe) ---
+function sanitizeMarketing(text, { profession, region } = {}) {
+  if (!text) return text;
 
+  // 1) Superlatives we never want in regulated health marketing
+  const superlatives = /\b(best|#1|number\s*1|leading|top[-\s]?rated|expert|world[-\s]?class|state[-\s]?of[-\s]?the[-\s]?art)\b/gi;
+  text = text.replace(superlatives, (m) => {
+    // friendlier, compliant swaps
+    if (/expert/i.test(m)) return 'experienced';
+    if (/leading|top|best|#1|number\s*1/i.test(m)) return 'trusted';
+    if (/world|state[-\s]?of[-\s]?the[-\s]?art/i.test(m)) return 'professional';
+    return 'professional';
+  });
+
+  // 2) Incentives / inducements (free, % off, coupons) – block outright
+  const incentives = /\b(free|complimentary|no[-\s]?cost|% ?off|percent ?off|discount|coupon|deal|special\s+offer|two[-\s]?for[-\s]?one|bogo)\b/gi;
+  if (incentives.test(text)) {
+    text = text.replace(incentives, 'introductory'); // soften wording
+    // also scrub explicit numerics like "50% off"
+    text = text.replace(/\b\d{1,3}\s?% ?off\b/gi, 'introductory rate');
+  }
+
+  // 3) Gentle advisory if we changed anything
+  if (superlatives.test || incentives.test) {
+    // Keep one calm, friendly note at the end (single sentence)
+    if (!/Compliance note:/i.test(text)) {
+      text += '\n\nCompliance note: I kept the wording conservative to avoid superlatives or promotional incentives.';
+    }
+  }
+  return text;
+}
 /* ---------------- 3) Chat ---------------- */
 app.post('/chat', async (req, res) => {
   try {
@@ -311,7 +343,21 @@ app.post('/chat', async (req, res) => {
 
 Disclaimer: It is the practitioner’s responsibility to ensure marketing is accurate, verifiable, and compliant. Cliniverse provides guidance only.`;
     }
+// --- Context logic: only ask once for missing info ---
+const { profession, region, threadId: incomingThreadId } = req.body || {};
+const hasProfession = !!profession;
+const hasRegion = !!region;
 
+let contextLine = '';
+if (!hasProfession && !hasRegion) {
+  contextLine = 'Before tailoring anything, ask once for BOTH profession and province/state, then wait.';
+} else if (!hasProfession) {
+  contextLine = 'Ask once for the profession only, then wait.';
+} else if (!hasRegion) {
+  contextLine = 'Ask once for the province/state only, then wait.';
+} else {
+  contextLine = 'Profession and region are known; do not ask again.';
+}
     // 1) Thread
     const thread = await threadCreate();
     const threadId = thread.id;
@@ -337,6 +383,9 @@ Avoid rigid formatting or headings like “Verdict” or “Fixes.”
 Avoid decorative asterisks or bold for emphasis. Use plain sentences. If a short list helps, use simple hyphen bullets and keep it to a maximum of 3 items.
 Mention the user’s profession/region only when it directly affects the wording; otherwise omit it to avoid repetition.
 
+Don’t repeat the user’s profession/region in every message; mention it sparingly.
+Prefer short paragraphs; use bullet points only if the user asks for lists.
+If you detect risky wording (superlatives like “expert/best/leading” or incentives like “free”, “% off”), rewrite it to compliant language and briefly say why (one friendly sentence).
 
 If you’re uncertain about compliance, always take the safer, more conservative route in your recommendation — and phrase it as supportive guidance (e.g., “To stay on the safe side, here’s how I’d suggest framing it.”)
 
@@ -384,7 +433,15 @@ Never give medical or treatment advice. Stay purely on marketing, content, and c
 
     // Light clean (avoid literal placeholder leaking)
     const cleaned = text.replace(/\[Cliniverse Support Line\]/gi, 'our support team');
+// after you compute `text`
+const { profession, region } = (req.body || {});
+const safeAnswer = sanitizeMarketing(text, { profession, region });
 
+res.json({
+  answer: safeAnswer || '(no response text)',
+  thread_id: threadId,
+  run_id: runId
+});
     res.json({ answer: cleaned || '(no response text)', thread_id: threadId, run_id: runId });
   } catch (e) {
     console.error('CHAT ERROR:', e);

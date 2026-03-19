@@ -205,6 +205,25 @@ Output order (strict):
  */
 function buildDynamicInstructions(userContextLine) {
   return `
+OVERRIDE: When writing any Meta ad, Facebook ad, or Instagram ad you MUST format the output exactly like this with each section on its own line:
+
+HEADLINE:
+[headline here]
+
+PRIMARY TEXT:
+[primary text here with line breaks between each sentence block]
+
+DESCRIPTION:
+[description here]
+
+CTA BUTTON:
+[recommendation here]
+
+COMPLIANCE TIP:
+[one sentence here]
+
+Do not combine these into paragraphs. Do not skip any section. Use exactly these labels.
+
 ${userContextLine}
 
 Retrieval logic (vector-first → national → strict-safe):
